@@ -36,8 +36,12 @@ class YieldService:
 
         if is_amm:
             unified_market["apr"] = float(
-                raw_pool.get("pool_apr") or raw_pool.get("apr") or 0.0
+                raw_pool.get("total_apr") or raw_pool.get("pool_apr") or raw_pool.get("apr") or 0.0
             )
+            unified_market["fee_apr_24h"] = float(raw_pool.get("fee_apr_24h") or unified_market["apr"])
+            unified_market["fee_apr_7d"] = float(raw_pool.get("fee_apr_7d") or 0.0)
+            unified_market["reward_apr"] = float(raw_pool.get("reward_apr") or 0.0)
+            unified_market["apr_source"] = raw_pool.get("apr_source")
             if "token0" in raw_pool and "token1" in raw_pool:
                 t0 = raw_pool["token0"].get("symbol", "")
                 t1 = raw_pool["token1"].get("symbol", "")

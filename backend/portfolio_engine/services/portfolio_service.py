@@ -86,7 +86,7 @@ class PortfolioService:
                 "positionsCount": len(all_positions)
             },
             "allocations": allocations,
-            "positions": [p.to_camel_dict() for p in all_positions],
+            "positions": [self._position_to_camel_dict(p) for p in all_positions],
             "assets": wallet_assets
         }
 
@@ -98,6 +98,37 @@ class PortfolioService:
 
     def _sum_value(self, positions):
         return sum(p.get("value_usd", 0) if isinstance(p, dict) else getattr(p, "value_usd", 0) for p in positions)
+
+    def _position_to_camel_dict(self, position):
+        if hasattr(position, "to_camel_dict"):
+            return position.to_camel_dict()
+
+        if not isinstance(position, dict):
+            return position
+
+        return {
+            "type": position.get("type"),
+            "protocol": position.get("protocol"),
+            "positionId": position.get("position_id"),
+            "marketId": position.get("market_id") or position.get("pool_id"),
+            "asset": position.get("asset") or [],
+            "rawSymbol": "/".join(position.get("asset") or []),
+            "balance": position.get("balance") or position.get("liquidity") or 0,
+            "valueUsd": position.get("value_usd", 0),
+            "side": position.get("side") or "LP",
+            "isCollateral": position.get("is_collateral", False),
+            "maxLtv": position.get("max_ltv", 0),
+            "liquidationThreshold": position.get("liquidation_threshold", 0),
+            "supplyApr": position.get("supply_apr", 0),
+            "borrowApr": position.get("borrow_apr", 0),
+            "borrowStableApr": position.get("borrow_stable_apr", 0),
+            "token0": position.get("asset", [None, None])[0] if position.get("asset") else None,
+            "token1": position.get("asset", [None, None])[1] if len(position.get("asset") or []) > 1 else None,
+            "amount0": position.get("amount0"),
+            "amount1": position.get("amount1"),
+            "feeTier": position.get("fee_tier"),
+            "collectedFeeUsd": position.get("collected_fee_usd"),
+        }
 
     def _calculate_health_factor(self, supply_positions, borrow_positions):
         total_borrow = sum(
@@ -119,4 +150,3 @@ class PortfolioService:
             return 0.0
 
         return round(weighted_collateral / total_borrow, 2)
-

@@ -20,18 +20,25 @@ class CompoundGraph(TheGraph):
         self.pricing = pricing
         self.url = TheGraphConfig.COMPOUND_GRAPH
 
-    async def get_markets(self, min_tvl: float = 10_000) -> list[dict]:
+    async def get_markets(self, min_tvl: float = 100_000) -> list[dict]:
         query = """
         query GetCompoundMarkets {
           markets {
             id
             name
-            inputToken { 
-              id 
-              symbol 
-              decimals 
-            }
+            isActive
+            maximumLTV
+            liquidationThreshold
+            liquidationPenalty
             totalValueLockedUSD
+            totalDepositBalanceUSD
+            totalBorrowBalanceUSD
+            openPositionCount
+            inputToken {
+              id
+              symbol
+              decimals
+            }
             rates {
               rate
               side
@@ -40,6 +47,7 @@ class CompoundGraph(TheGraph):
           }
         }
         """
+
         data = await self.query(url=self.url, query=query)
 
         raw_supported = self.pricing.get_supported_tokens() or []
@@ -48,9 +56,20 @@ class CompoundGraph(TheGraph):
         markets = []
 
         for m in data.get("markets", []):
+
+            if not m.get("isActive", False):
+                continue
+
             tvl = float(m.get("totalValueLockedUSD") or 0)
+            deposit_usd = float(m.get("totalDepositBalanceUSD") or 0)
+            borrow_usd = float(m.get("totalBorrowBalanceUSD") or 0)
+
+            open_positions = int(m.get("openPositionCount") or 0)
 
             if tvl < min_tvl:
+                continue
+
+            if open_positions < 5:
                 continue
 
             input_token = m.get("inputToken") or {}
@@ -61,17 +80,18 @@ class CompoundGraph(TheGraph):
             else:
                 symbol = raw_symbol.upper().strip()
 
-            if supported_tokens and (symbol not in supported_tokens):
+            if supported_tokens and symbol not in supported_tokens:
                 continue
 
             supply_apr = 0.0
             borrow_apr = 0.0
+
             for r in m.get("rates", []):
-                rate_value = float(
-                    r.get("rate") or 0
-                    ) * 100
+                rate_value = float(r.get("rate") or 0) * 100
+
                 if r.get("side") == "LENDER":
                     supply_apr = rate_value
+
                 elif r.get("side") == "BORROWER":
                     borrow_apr = rate_value
 
@@ -86,14 +106,14 @@ class CompoundGraph(TheGraph):
                     "tokenAddress": input_token.get("id"),
                     "decimals": int(input_token.get("decimals") or 18),
                     "tvl": round(tvl, 4),
-                    "totalDepositUsd": round(tvl, 4),
-                    "totalBorrowUsd": 0.0,
+                    "totalDepositUsd": round(deposit_usd, 4),
+                    "totalBorrowUsd": round(borrow_usd, 4),
                     "supplyApr": round(supply_apr, 4),
                     "borrowApr": round(borrow_apr, 4),
                     "borrowStableApr": 0.0,
-                    "maxLtv": 0.0,
-                    "liquidationThreshold": 0.0,
-                    "liquidationPenalty": 0.0,
+                    "maxLtv": round(float(m.get("maximumLTV") or 0) * 100, 4),
+                    "liquidationThreshold": round(float(m.get("liquidationThreshold") or 0) * 100, 4),
+                    "liquidationPenalty": round(float(m.get("liquidationPenalty") or 0) * 100, 4),
                     "isActive": True,
                     "canBorrow": True,
                 }
@@ -132,7 +152,9 @@ class CompoundGraph(TheGraph):
 
         for p in data.get("positions", []):
             try:
-                balance = float(p.get("balance", "0"))
+                balance_raw = float(p.get("balance", "0"))
+                decimals = int(p.get("asset", {}).get("decimals") or 18)
+                balance = self._normalize_position_balance(balance_raw, decimals)
             except (ValueError, TypeError):
                 continue
             if balance <= 0:
@@ -245,6 +267,11 @@ class CompoundGraph(TheGraph):
         if upper.startswith("C") and len(upper) > 3:  # Dự phòng dạng cUSDC, cDAI
             return upper[1:]
         return upper
+
+    def _normalize_position_balance(self, balance: float, decimals: int) -> float:
+        if balance <= 0:
+            return 0.0
+        return balance / (10 ** decimals)
 
     def _extract_rates(self, rates: list) -> tuple[float, float]:
         supply_apr = 0.0

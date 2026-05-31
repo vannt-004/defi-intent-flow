@@ -35,6 +35,41 @@ class OnchainTransactionCrawler:
             latest_block = self.repository.get_latest_block(wallet)
             start_block = latest_block + 1 if latest_block else 0
 
+        rows, stats = await self.fetch_wallet_transactions(
+            wallet=wallet,
+            start_block=start_block,
+            end_block=end_block,
+            offset=offset,
+        )
+
+        self.repository.bulk_upsert(rows)
+
+        self.logger.info(
+            "[OnchainTransactionCrawler] wallet=%s normal=%s erc20=%s saved=%s",
+            wallet,
+            stats["normal_tx_count"],
+            stats["erc20_transfer_count"],
+            len(rows),
+        )
+
+        return {
+            "wallet": wallet,
+            "start_block": start_block,
+            "end_block": end_block,
+            "normal_tx_count": stats["normal_tx_count"],
+            "erc20_transfer_count": stats["erc20_transfer_count"],
+            "saved_count": len(rows),
+        }
+
+    async def fetch_wallet_transactions(
+        self,
+        wallet: str,
+        start_block: int = 0,
+        end_block: int = 99999999,
+        offset: int = 1000,
+    ) -> tuple[list[dict], dict]:
+        wallet = wallet.lower().strip()
+
         normal_txs = await self._fetch_all(
             fetcher=self.etherscan.get_normal_transactions,
             wallet=wallet,
@@ -50,27 +85,19 @@ class OnchainTransactionCrawler:
             offset=offset,
         )
 
+        gas_by_hash = {
+            tx.get("hash"): self._gas_cost_eth(tx)
+            for tx in normal_txs
+            if tx.get("hash")
+        }
+
         rows = self._normalize_native_transactions(wallet, normal_txs)
-        rows.extend(self._normalize_erc20_transfers(wallet, token_txs))
+        rows.extend(self._normalize_erc20_transfers(wallet, token_txs, gas_by_hash))
         rows = self.filter_service.filter_and_label(rows)
 
-        self.repository.bulk_upsert(rows)
-
-        self.logger.info(
-            "[OnchainTransactionCrawler] wallet=%s normal=%s erc20=%s saved=%s",
-            wallet,
-            len(normal_txs),
-            len(token_txs),
-            len(rows),
-        )
-
-        return {
-            "wallet": wallet,
-            "start_block": start_block,
-            "end_block": end_block,
+        return rows, {
             "normal_tx_count": len(normal_txs),
             "erc20_transfer_count": len(token_txs),
-            "saved_count": len(rows),
         }
 
     async def crawl_active_wallets(self, limit: int = 1000) -> list[dict]:
@@ -147,7 +174,7 @@ class OnchainTransactionCrawler:
 
         return rows
 
-    def _normalize_erc20_transfers(self, wallet: str, transfers: list[dict]) -> list[dict]:
+    def _normalize_erc20_transfers(self, wallet: str, transfers: list[dict], gas_by_hash: dict[str, float]) -> list[dict]:
         rows = []
 
         for tx in transfers:
@@ -158,6 +185,7 @@ class OnchainTransactionCrawler:
 
             direction = "in" if (tx.get("to") or "").lower() == wallet else "out"
             amount = value_raw / (10 ** decimals)
+            gas_cost_eth = gas_by_hash.get(tx.get("hash"), 0.0) if direction == "out" else 0.0
 
             rows.append({
                 "wallet": wallet,
@@ -176,7 +204,7 @@ class OnchainTransactionCrawler:
                 "amount_raw": str(value_raw),
                 "from": (tx.get("from") or "").lower(),
                 "to": (tx.get("to") or "").lower(),
-                "gas_cost_eth": 0.0,
+                "gas_cost_eth": gas_cost_eth,
                 "method_id": tx.get("methodId"),
                 "function_name": tx.get("functionName"),
                 "source": "etherscan",

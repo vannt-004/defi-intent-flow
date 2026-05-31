@@ -23,6 +23,16 @@ class PriceSnapshotRepository(BaseRepository):
 
         return dict(result)
 
+    def get_latest_prices_before(self, tokens: list[str], timestamp: int) -> dict[str, dict]:
+        result = {}
+
+        for token in tokens:
+            row = self.get_price_at_or_before(token, timestamp)
+            if row:
+                result[token] = row
+
+        return result
+
     def get_price_at_or_before(self, coingecko_id: str, timestamp: int) -> dict | None:
         return self.collection.find_one(
             {"coingeckoId": coingecko_id, "timestamp": {"$lte": timestamp}},
@@ -47,6 +57,21 @@ class PriceSnapshotRepository(BaseRepository):
                 "coingeckoId": coingecko_id,
                 "timestamp": {"$gte": timestamp, "$lte": timestamp + max_window_seconds},
             },
+            {"_id": 0},
+            sort=[("timestamp", ASCENDING)],
+        )
+
+    def get_price_nearest_any(self, coingecko_id: str, timestamp: int) -> dict | None:
+        before = self.collection.find_one(
+            {"coingeckoId": coingecko_id, "timestamp": {"$lte": timestamp}},
+            {"_id": 0},
+            sort=[("timestamp", DESCENDING)],
+        )
+        if before:
+            return before
+
+        return self.collection.find_one(
+            {"coingeckoId": coingecko_id, "timestamp": {"$gte": timestamp}},
             {"_id": 0},
             sort=[("timestamp", ASCENDING)],
         )

@@ -29,7 +29,7 @@ class PriceWorker(BaseWorker):
 
         await asyncio.gather(
             self.sync_service.sync_prices(),
-            # self.sync_service.sync_metadata()
+            self.sync_service.sync_metadata()
         )
 
     async def stop(self):

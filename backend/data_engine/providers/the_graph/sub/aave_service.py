@@ -188,7 +188,9 @@ class AaveGraph(TheGraph):
 
         for p in data.get("positions", []):
             try:
-                balance = float(p.get("balance", "0"))
+                balance_raw = float(p.get("balance", "0"))
+                decimals = int(p.get("asset", {}).get("decimals") or 18)
+                balance = self._normalize_position_balance(balance_raw, decimals)
             except (ValueError, TypeError):
                 continue
             if balance <= 0:
@@ -683,6 +685,11 @@ class AaveGraph(TheGraph):
         if upper in self.ATOKEN_PREFIX_MAP:
             return self.ATOKEN_PREFIX_MAP[upper]
         return upper
+
+    def _normalize_position_balance(self, balance: float, decimals: int) -> float:
+        if balance <= 0:
+            return 0.0
+        return balance / (10 ** decimals)
 
     def _extract_rates(self, rates: list) -> tuple[float, float]:
         supply_apr, borrow_apr, _ = self._extract_rates_full(rates)

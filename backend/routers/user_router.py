@@ -17,6 +17,11 @@ async def add_wallet(body: AddWalletRequest):
     return await wallet_service.add_wallet(body.wallet)
 
 
+@router.get("/wallet/{wallet}/status")
+async def get_wallet_status(wallet: str):
+    return await wallet_service.get_wallet_status(wallet)
+
+
 @router.get("/{wallet}")
 async def get_overview_portfolio(wallet: str):
     portfolio_service = PortfolioService(wallet)

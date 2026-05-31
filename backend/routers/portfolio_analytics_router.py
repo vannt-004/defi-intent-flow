@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Query
 
-from data_engine.services.user.onchain_transaction_crawler import OnchainTransactionCrawler
 from portfolio_engine.services.portfolio_analytics_service import PortfolioAnalyticsService
-from shared.databases.mongo_client import MongoConnection
-from shared.repositories.onchain_transaction_repository import OnchainTransactionRepository
+from portfolio_engine.services.position_risk_service import PositionRiskService
+
 
 router = APIRouter(prefix="/portfolio/analytics", tags=["Portfolio Analytics"])
 
@@ -32,21 +31,13 @@ async def get_portfolio_history(wallet: str, limit: int = Query(default=90, ge=1
     return service.get_chart_history(wallet, limit=limit)
 
 
-@router.get("/{wallet}/onchain-transactions")
-async def get_onchain_transactions(wallet: str, limit: int = Query(default=100, ge=1, le=500)):
-    db = MongoConnection.get_database()
-    repository = OnchainTransactionRepository(db)
-    return repository.get_wallet_transactions(wallet.lower(), limit=limit)
+@router.get("/{wallet}/risk")
+async def get_portfolio_position_risk(wallet: str):
+    service = PositionRiskService()
+    return service.get_wallet_risk(wallet)
 
 
-@router.post("/{wallet}/crawl-onchain")
-async def crawl_onchain_transactions(
-    wallet: str,
-    start_block: int | None = None,
-    end_block: int = Query(default=99999999, ge=0),
-):
-    crawler = OnchainTransactionCrawler()
-    try:
-        return await crawler.crawl_wallet(wallet=wallet, start_block=start_block, end_block=end_block)
-    finally:
-        await crawler.close()
+@router.get("/{wallet}/risk/history")
+async def get_portfolio_risk_history(wallet: str, limit: int = Query(default=90, ge=1, le=1000)):
+    service = PositionRiskService()
+    return service.get_portfolio_risk_history(wallet, limit=limit)

@@ -38,5 +38,9 @@ class Web3Config:
     W3 = Web3( Web3.HTTPProvider(os.getenv("RPC_URL", "https://ethereum-rpc.publicnode.com")))
     MULTICALL_ADDRESS = os.getenv("MULTICALL_ADDRESS", "0xcA11bde05977b3631167028862bE2a173976CA11")
 
-    
-    
+
+class AIConfig:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    INTENT_PROVIDER = os.getenv("INTENT_PROVIDER", "auto")

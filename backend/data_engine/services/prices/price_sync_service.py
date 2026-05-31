@@ -19,7 +19,7 @@ class PriceSyncService:
         self.coingecko_service = coingecko_service
 
         self.batch_size = 500
-        self.meta_concurrency = 1
+        self.meta_concurrency = 10000
 
     async def sync_prices(self):
         tokens = self.token_repository.get_all_tokens()

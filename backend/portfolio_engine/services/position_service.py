@@ -2,7 +2,6 @@ from data_engine.providers.the_graph.lending_factory import LendingProviderFacto
 from data_engine.services.prices.pricing_service import PricingService
 from shared.databases.mongo_client import MongoConnection
 
-from data_engine.providers.the_graph.sub.curve_service import CurveService
 from data_engine.providers.the_graph.sub.uniswap_service import UniswapGraph
 
 
@@ -14,7 +13,6 @@ class PositionService:
         self.lending_factory = LendingProviderFactory(self.pricing)
 
         self.uniswap = UniswapGraph(self.pricing)
-        self.curve = CurveService(self.pricing)
 
     async def get_positions(self, wallet: str) -> list:
         wallet = wallet.lower().strip()
@@ -34,12 +32,5 @@ class PositionService:
                 all_positions.extend(uni_positions)
         except Exception as e:
             print(f"[PositionService] Error fetching Uniswap positions: {e}")
-
-        try:
-            if hasattr(self.curve, "get_positions"):
-                curve_positions = await self.curve.get_positions(wallet)
-                all_positions.extend(curve_positions)
-        except Exception as e:
-            print(f"[PositionService] Error fetching Curve positions: {e}")
 
         return all_positions

@@ -1,6 +1,7 @@
 from pymongo import UpdateOne
 
 from shared.databases.base_repository import BaseRepository
+from shared.utils.case_utils import keys_to_camel, keys_to_snake
 
 
 class YieldRepository(BaseRepository):
@@ -13,7 +14,8 @@ class YieldRepository(BaseRepository):
         operations = []
 
         for market in markets:
-            operations.append(UpdateOne({"_id": market["_id"]}, {"$set": market}, upsert=True))
+            normalized = keys_to_camel(market)
+            operations.append(UpdateOne({"_id": normalized["_id"]}, {"$set": normalized}, upsert=True))
 
         if not operations:
             return None
@@ -25,7 +27,11 @@ class YieldRepository(BaseRepository):
 
         cursor = (self.collection.find(query, {"_id": 0}).sort("tvl", -1).limit(limit))
 
-        return list(cursor)
+        return [keys_to_snake(row) for row in cursor]
 
     def get_market_by_id(self, market_id: str) -> dict | None:
-        return self.collection.find_one({"_id": market_id}, {"_id": 0})
+        row = self.collection.find_one(
+            {"$or": [{"_id": market_id}, {"marketId": market_id}, {"address": market_id}, {"poolId": market_id}]},
+            {"_id": 0},
+        )
+        return keys_to_snake(row) if row else None

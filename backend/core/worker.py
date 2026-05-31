@@ -4,6 +4,6 @@ from data_engine.workers.yield_worker import YieldWorker
 
 workers = [
     # PriceWorker(scheduler="^true@60"),
-    YieldWorker(scheduler="^true@60"),
-    # PortfolioAnalyticsWorker(scheduler="^true@360")
+    YieldWorker(scheduler="^true@360"),
+    PortfolioAnalyticsWorker(scheduler="^true@360")
 ]

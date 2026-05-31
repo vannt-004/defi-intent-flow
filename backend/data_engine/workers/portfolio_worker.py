@@ -20,14 +20,10 @@ class PortfolioAnalyticsWorker(BaseWorker):
         wallets = self.wallet_repository.get_active_wallets(limit=5000)
 
         if not wallets:
-            self.logger.info(
-                "[PortfolioAnalyticsWorker] No active wallets found to sync."
-            )
+            self.logger.info("No active wallets found to sync.")
             return
 
-        self.logger.info(
-            f"[PortfolioAnalyticsWorker] Found {len(wallets)} active wallets. Pushing to queue..."
-        )
+        self.logger.info(f"Found {len(wallets)} active wallets. Pushing to queue...")
 
         for wallet in wallets:
             wallet = wallet.lower().strip()
@@ -39,10 +35,6 @@ class PortfolioAnalyticsWorker(BaseWorker):
                     id="*"
                 )
             except Exception as e:
-                self.logger.error(
-                    f"[PortfolioAnalyticsWorker] Failed to push wallet={wallet} to stream. Error={e}"
-                )
+                self.logger.error(f"Failed to push wallet={wallet} to stream. Error={e}")
 
-        self.logger.info(
-            "[PortfolioAnalyticsWorker] Finished pushing all wallet sync events to Redis Stream."
-        )
+        self.logger.info("Finished pushing all wallet sync events to Redis Stream.")

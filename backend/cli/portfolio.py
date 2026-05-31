@@ -29,13 +29,13 @@ def portfolio_stream_worker(redis_url: str, stream: str, group: str, consumer: s
 
 @click.command()
 @click.argument("wallet")
-@click.option("--source", default="cli", show_default=True)
-def portfolio_sync_wallet(wallet: str, source: str):
+@click.option("--mode", default="SYNC", show_default=True)
+def portfolio_sync_wallet(wallet: str, mode: str):
     """Sync one wallet immediately without Redis."""
 
     async def run():
         service = PortfolioSyncService()
-        snapshot = await service.sync_user(wallet=wallet, source=source)
+        snapshot = await service.sync_user(wallet=wallet, mode=mode)
         click.echo(
             "wallet={wallet} net_worth_usd={net_worth} total_pnl_usd={pnl}".format(
                 wallet=snapshot["wallet"],
@@ -45,3 +45,13 @@ def portfolio_sync_wallet(wallet: str, source: str):
         )
 
     asyncio.run(run())
+
+
+@click.command()
+@click.argument("wallet")
+def portfolio_reset_wallet(wallet: str):
+    """Delete derived portfolio data for one wallet, keeping token/price/yield data."""
+
+    service = PortfolioSyncService()
+    result = service.reset_wallet_data(wallet)
+    click.echo(f"wallet={result['wallet']} deleted={result['deleted']}")

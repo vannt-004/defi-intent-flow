@@ -94,7 +94,10 @@ class PricingService:
 
         snapshot = self.snapshot_repository.get_price_nearest(coingecko_id, timestamp)
         if not snapshot:
-            return default
+            snapshot = self.snapshot_repository.get_price_nearest_any(coingecko_id, timestamp)
+        if not snapshot:
+            current_price = token.get("price")
+            return float(current_price or default)
 
         return float(snapshot.get("price") or default)
 
