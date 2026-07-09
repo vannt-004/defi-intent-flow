@@ -273,6 +273,15 @@ class CompoundGraph(TheGraph):
             return 0.0
         return balance / (10 ** decimals)
 
+    def _normalize_token_amount(self, amount: str | int | float | None, decimals: int) -> float:
+        try:
+            raw = float(amount or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        if raw <= 0:
+            return 0.0
+        return raw / (10 ** decimals)
+
     def _extract_rates(self, rates: list) -> tuple[float, float]:
         supply_apr = 0.0
         borrow_apr = 0.0
@@ -292,8 +301,8 @@ class CompoundGraph(TheGraph):
     def _format_action(self, item: dict, action_type: str) -> dict:
         symbol = self._normalize_ctoken(item["asset"]["symbol"])
         decimals = int(item["asset"].get("decimals") or 18)
-        amount_raw = float(item.get("amount") or 0)
-        amount = amount_raw / (10 ** decimals) if amount_raw > 1e10 else amount_raw
+        amount_raw = item.get("amount") or 0
+        amount = self._normalize_token_amount(amount_raw, decimals)
         return {
             "tx_id": item["id"],
             "action": action_type,
@@ -301,5 +310,7 @@ class CompoundGraph(TheGraph):
             "market_id": item["market"]["id"],
             "symbol": symbol,
             "amount": round(amount, 8),
+            "amount_raw": str(amount_raw),
+            "decimals": decimals,
             "amount_usd": round(float(item.get("amountUSD") or 0), 4),
         }

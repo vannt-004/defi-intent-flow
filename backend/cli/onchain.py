@@ -11,7 +11,7 @@ from data_engine.services.user.onchain_transaction_crawler import OnchainTransac
 @click.option("--end-block", type=int, default=99999999, show_default=True)
 @click.option("--offset", type=int, default=1000, show_default=True)
 def onchain_crawl_wallet(wallet: str, start_block: int | None, end_block: int, offset: int):
-    """Crawl native and ERC20 wallet transactions from Etherscan."""
+    """Preview supported native and ERC20 wallet transactions from Etherscan."""
 
     async def run():
         crawler = OnchainTransactionCrawler()
@@ -32,7 +32,7 @@ def onchain_crawl_wallet(wallet: str, start_block: int | None, end_block: int, o
 @click.command()
 @click.option("--limit", type=int, default=1000, show_default=True)
 def onchain_crawl_active_wallets(limit: int):
-    """Crawl on-chain transactions for active wallets."""
+    """Preview supported on-chain transactions for active wallets."""
 
     async def run():
         crawler = OnchainTransactionCrawler()

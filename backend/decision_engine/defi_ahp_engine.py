@@ -28,7 +28,18 @@ class DeFiAHPEngine:
         else:
             matrix = profile_or_matrix
 
+        consistency = AHPEngine.ensure_consistent(matrix)
         w_yield, w_safety, w_efficiency = AHPEngine.calculate_weights(matrix)
+        ahp_meta = {
+            "weights": {
+                "yield": round(w_yield, 6),
+                "safety": round(w_safety, 6),
+                "efficiency": round(w_efficiency, 6),
+            },
+            "lambdaMax": round(consistency["lambda_max"], 6),
+            "consistencyIndex": round(consistency["ci"], 6),
+            "consistencyRatio": round(consistency["cr"], 6),
+        }
         ranked_list = []
 
         for market in unified_markets:
@@ -102,6 +113,7 @@ class DeFiAHPEngine:
             match_index = max(0.0, min(100.0, match_index))
 
             evaluated_pool["ahpMatchIndex"] = round(match_index, 2)
+            evaluated_pool["ahpModel"] = ahp_meta
             evaluated_pool["flags"] = flags
             evaluated_pool[
                 "tier"] = "Tier A+" if match_index >= 85 else "Tier A" if match_index >= 70 else "Tier B" if match_index >= 50 else "Tier C" if match_index >= 30 else "Tier D"

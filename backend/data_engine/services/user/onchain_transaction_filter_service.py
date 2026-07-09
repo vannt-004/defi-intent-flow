@@ -12,13 +12,11 @@ class OnchainTransactionFilterService:
         self.supported_symbols, self.supported_addresses = self._load_supported_tokens()
 
     def filter_and_label(self, rows: list[dict]) -> list[dict]:
-        self._classify_swaps(rows)
+        supported_rows = [row for row in rows if self.is_supported(row)]
+        self._classify_swaps(supported_rows)
 
         result = []
-        for row in rows:
-            if not self.is_supported(row):
-                continue
-
+        for row in supported_rows:
             row["action_label"] = self._action_label(row["action"])
             row["transaction_category"] = self._category(row["action"])
             result.append(row)

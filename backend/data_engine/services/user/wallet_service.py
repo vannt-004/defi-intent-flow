@@ -60,7 +60,7 @@ class WalletService:
             "symbol": symbol,
             "name": meta.get("name"),
             "address": token.get("address"),
-            "balanceRaw": balance_raw,
+            "balanceRaw": str(balance_raw),
             "decimals": token.get("decimals", 18),
             "balance": balance,
             "price": price,
@@ -92,6 +92,7 @@ class WalletService:
             self.pricing.get_token_info(symbol)
             for symbol in self.pricing.get_supported_tokens()
         ]
+        supported_tokens = self._dedupe_tokens(supported_tokens)
 
         if not supported_tokens:
             return portfolio
@@ -125,6 +126,53 @@ class WalletService:
             except:
                 continue
 
+        portfolio = self._merge_assets_by_symbol(portfolio)
         portfolio.sort(key=lambda x: x.get("valueUsd", 0), reverse=True)
 
         return portfolio
+
+    def _dedupe_tokens(self, tokens: list[dict]) -> list[dict]:
+        result = []
+        seen = set()
+
+        for token in tokens:
+            symbol = str(token.get("symbol") or "").upper()
+            address = str(token.get("address") or "").lower()
+            key = address or symbol
+            if not key or key in seen:
+                continue
+
+            seen.add(key)
+            result.append(token)
+
+        return result
+
+    def _merge_assets_by_symbol(self, assets: list[dict]) -> list[dict]:
+        groups = {}
+        seen_exact_assets = set()
+
+        for asset in assets:
+            symbol = asset.get("symbol")
+            if not symbol:
+                continue
+
+            normalized_symbol = self.pricing.normalize_symbol(symbol)
+            address = str(asset.get("address") or "").lower()
+            exact_key = (normalized_symbol, address, str(asset.get("balanceRaw") or ""))
+            if exact_key in seen_exact_assets:
+                continue
+            seen_exact_assets.add(exact_key)
+
+            group = groups.get(normalized_symbol)
+            if not group:
+                groups[normalized_symbol] = dict(asset)
+                continue
+
+            group["balance"] = float(group.get("balance") or 0) + float(asset.get("balance") or 0)
+            group["valueUsd"] = float(group.get("valueUsd") or 0) + float(asset.get("valueUsd") or 0)
+            if group["balance"] > 0:
+                group["price"] = group["valueUsd"] / group["balance"]
+            group["balanceRaw"] = None
+            group["address"] = group.get("address") if group.get("address") == asset.get("address") else None
+
+        return list(groups.values())

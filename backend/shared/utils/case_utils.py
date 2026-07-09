@@ -31,6 +31,29 @@ def keys_to_snake(value):
     return _convert_keys(value, camel_to_snake_key)
 
 
+MAX_MONGO_INT64 = 2**63 - 1
+MIN_MONGO_INT64 = -(2**63)
+
+
+def sanitize_mongo_numbers(value, key: str | None = None):
+    if isinstance(value, list):
+        return [sanitize_mongo_numbers(item, key) for item in value]
+    if isinstance(value, dict):
+        return {
+            item_key: sanitize_mongo_numbers(item_value, item_key)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, bool) or not isinstance(value, int):
+        return value
+    if MIN_MONGO_INT64 <= value <= MAX_MONGO_INT64:
+        return value
+
+    normalized_key = (key or "").lower()
+    if "raw" in normalized_key or normalized_key.endswith("id"):
+        return str(value)
+    return float(value)
+
+
 def _convert_keys(value, converter):
     if isinstance(value, list):
         return [_convert_keys(item, converter) for item in value]

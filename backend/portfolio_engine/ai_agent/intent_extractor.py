@@ -28,6 +28,7 @@ class NLPIntentExtractor:
             IntentSpec("loop_lending", ("loop", "leverage", "xoay vòng", "vòng", "recursive", "folding"), self._loop_lending),
             IntentSpec("provide_liquidity", ("provide liquidity", "add liquidity", "lp", "liquidity pool", "cung cấp thanh khoản"), self._provide_liquidity),
             IntentSpec("price_shock", ("drop", "fall", "decrease", "down", "giảm", "tăng", "increase", "up", "rise"), self._price_shock),
+            IntentSpec("buy", ("buy", "purchase", "mua"), self._buy),
             IntentSpec("swap", ("swap", "exchange", "convert", "đổi", "hoán đổi"), self._swap),
             IntentSpec("borrow", ("borrow", "vay"), self._borrow),
             IntentSpec("lend", ("lend", "supply", "deposit", "stake", "staking", "gửi", "cung cấp"), self._lend),
@@ -57,8 +58,9 @@ class NLPIntentExtractor:
             "role": "system",
             "content": (
                 "Extract a DeFi portfolio simulation intent. Return only compact JSON. "
-                "Allowed type values: price_shock, swap, lend, stake, borrow, loop_lending, provide_liquidity, unknown. "
+                "Allowed type values: price_shock, buy, swap, lend, stake, borrow, loop_lending, provide_liquidity, unknown. "
                 "For price_shock return {type, shocks:{SYMBOL: pct}, confidence}. "
+                "For buy return {type, symbol, fromSymbol, amount, confidence}. "
                 "For swap return {type, fromSymbol, toSymbol, amount, confidence}. "
                 "For lend/stake return {type, symbol, amount, confidence}. "
                 "For borrow return {type, symbol, amount, confidence}. "
@@ -154,6 +156,29 @@ class NLPIntentExtractor:
             "amount": amount["amount"],
             "toSymbol": target.group("target").upper() if target else "USDC",
             "_confidence_boost": 0.15 if target else 0,
+        }
+
+    def _buy(self, text: str) -> dict | None:
+        target = re.search(
+            r"(?:buy|purchase|mua)\s+(?:(?P<amount>\d+(?:\.\d+)?)\s*)?(?P<symbol>[a-zA-Z][a-zA-Z0-9.]*)",
+            text,
+            re.IGNORECASE,
+        )
+        amount = self._amount_symbol(text)
+        if not target and not amount:
+            return None
+
+        funding = re.search(r"(?:with|using|bằng|bang|dùng|dung)\s+(?P<funding>[a-zA-Z][a-zA-Z0-9.]*)", text, re.IGNORECASE)
+        symbol = target.group("symbol").upper() if target else amount["symbol"]
+        parsed_amount = target.group("amount") if target else None
+
+        return {
+            "type": "buy",
+            "symbol": symbol,
+            "toSymbol": symbol,
+            "fromSymbol": funding.group("funding").upper() if funding else "USDC",
+            "amount": float(parsed_amount) if parsed_amount else (amount["amount"] if amount else 1),
+            "_confidence_boost": 0.2,
         }
 
     def _provide_liquidity(self, text: str) -> dict | None:

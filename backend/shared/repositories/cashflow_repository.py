@@ -1,3 +1,5 @@
+import re
+
 from pymongo import UpdateOne
 from pymongo import DESCENDING
 from pymongo.errors import OperationFailure
@@ -15,7 +17,10 @@ class CashflowRepository(BaseRepository):
         self.collection.create_index([("wallet", 1), ("txId", 1), ("action", 1)], unique=True)
 
         self.collection.create_index([("wallet", 1), ("timestamp", -1)])
+        self.collection.create_index([("wallet", 1), ("symbol", 1), ("timestamp", -1)])
         self.collection.create_index([("wallet", 1), ("eventSource", 1), ("blockNumber", -1)])
+        self.collection.create_index([("wallet", 1), ("txHash", 1), ("logIndex", 1)])
+        self.collection.create_index([("positionId", 1), ("timestamp", -1)])
 
     def _drop_legacy_indexes(self):
         for index_name in ("wallet_1_tx_id_1_action_1", "wallet_1_event_source_1_block_number_-1"):
@@ -60,6 +65,85 @@ class CashflowRepository(BaseRepository):
             .sort("timestamp", 1)
         )
         return [keys_to_snake(row) for row in rows]
+
+    def get_wallet_watermark(self, wallet: str) -> dict:
+        wallet = wallet.lower()
+        latest = self.collection.find_one(
+            {"wallet": wallet},
+            {"_id": 0, "timestamp": 1, "txId": 1, "txHash": 1, "logIndex": 1},
+            sort=[("timestamp", DESCENDING), ("txId", DESCENDING), ("logIndex", DESCENDING)],
+        ) or {}
+        latest_block = self.collection.find_one(
+            {"wallet": wallet, "blockNumber": {"$exists": True}},
+            {"_id": 0, "blockNumber": 1},
+            sort=[("blockNumber", DESCENDING)],
+        ) or {}
+
+        return {
+            "count": self.collection.count_documents({"wallet": wallet}),
+            "latestTimestamp": int(latest.get("timestamp") or 0),
+            "latestBlockNumber": int(latest_block.get("blockNumber") or 0),
+            "latestTxId": latest.get("txId"),
+            "latestTxHash": latest.get("txHash"),
+            "latestLogIndex": latest.get("logIndex"),
+        }
+
+    def get_cashflows_by_tx_hashes(self, tx_hashes: list[str]) -> list[dict]:
+        hashes = [tx_hash.lower() for tx_hash in tx_hashes if tx_hash]
+        if not hashes:
+            return []
+
+        rows = list(
+            self.collection.find(
+                {
+                    "$or": [
+                        {"txHash": {"$in": hashes}},
+                        {"txId": {"$in": hashes}},
+                        *[{"txId": {"$regex": re.escape(tx_hash), "$options": "i"}} for tx_hash in hashes],
+                    ]
+                },
+                {"_id": 0},
+            )
+        )
+        return [keys_to_snake(row) for row in rows]
+
+    def get_missing_gas_tx_hashes(self, limit: int = 500) -> list[dict]:
+        rows = list(
+            self.collection.find(
+                {
+                    "$and": [
+                        {
+                            "$or": [
+                                {"gasCostUsd": {"$exists": False}},
+                                {"gasCostUsd": None},
+                                {"gasCostUsd": 0},
+                            ],
+                        },
+                        {
+                            "$or": [
+                                {"txHash": {"$exists": True, "$ne": None}},
+                                {"txId": {"$regex": "0x[a-fA-F0-9]{64}"}},
+                            ],
+                        },
+                    ],
+                },
+                {"_id": 0, "wallet": 1, "txHash": 1, "txId": 1, "timestamp": 1},
+            )
+            .sort("timestamp", DESCENDING)
+            .limit(limit)
+        )
+
+        unique = {}
+        for row in rows:
+            tx_hash = row.get("txHash") or self._extract_tx_hash(row.get("txId"))
+            if not tx_hash:
+                continue
+            unique[tx_hash.lower()] = {
+                "wallet": row.get("wallet"),
+                "txHash": tx_hash.lower(),
+                "timestamp": int(row.get("timestamp") or 0),
+            }
+        return list(unique.values())
 
     def get_latest_onchain_block(self, wallet: str) -> int:
         row = self.collection.find_one(
@@ -112,6 +196,64 @@ class CashflowRepository(BaseRepository):
             "avg_protocol_fee_usd": round(sum(protocol_fee_usd) / len(protocol_fee_usd), 6) if protocol_fee_usd else 0.0,
             "median_protocol_fee_usd": round(self._median(protocol_fee_usd), 6) if protocol_fee_usd else 0.0,
         }
+
+    def backfill_gas_by_tx_hash(self, wallet: str, gas_by_hash: dict[str, dict]):
+        if not gas_by_hash:
+            return None
+
+        rows = list(
+            self.collection.find(
+                {"wallet": wallet},
+                {"_id": 1, "txId": 1, "txHash": 1, "gasCostUsd": 1, "gasCostEth": 1},
+            )
+        )
+        operations = []
+
+        for row in rows:
+            tx_hash = row.get("txHash") or self._extract_tx_hash(row.get("txId"))
+            if not tx_hash:
+                continue
+            gas = gas_by_hash.get(tx_hash.lower())
+            if not gas:
+                continue
+            if float(row.get("gasCostUsd") or 0) > 0 and row.get("txHash"):
+                continue
+
+            operations.append(UpdateOne(
+                {"_id": row["_id"]},
+                {"$set": {
+                    "txHash": tx_hash.lower(),
+                    "gasCostEth": float(gas.get("gasCostEth") or 0),
+                    "gasCostUsd": float(gas.get("gasCostUsd") or 0),
+                }},
+            ))
+
+        return self.collection.bulk_write(operations, ordered=False) if operations else None
+
+    def update_gas_by_tx_hash(self, tx_hash: str, gas_cost_eth: float, gas_cost_usd: float):
+        tx_hash = tx_hash.lower()
+        return self.collection.update_many(
+            {
+                "$or": [
+                    {"txHash": tx_hash},
+                    {"txId": tx_hash},
+                    {"txId": {"$regex": re.escape(tx_hash), "$options": "i"}},
+                ]
+            },
+            {
+                "$set": {
+                    "txHash": tx_hash,
+                    "gasCostEth": round(float(gas_cost_eth or 0), 10),
+                    "gasCostUsd": round(float(gas_cost_usd or 0), 6),
+                }
+            },
+        )
+
+    def _extract_tx_hash(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        match = re.search(r"0x[a-fA-F0-9]{64}", str(value))
+        return match.group(0).lower() if match else None
 
     def _median(self, values: list[float]) -> float:
         if not values:

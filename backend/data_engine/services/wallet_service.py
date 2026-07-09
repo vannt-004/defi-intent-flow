@@ -35,11 +35,12 @@ class WalletService:
 
     async def get_wallet_status(self, wallet: str):
         wallet_clean = wallet.lower().strip()
+        self.wallet_repository.recover_stale_syncing()
         row = self.wallet_repository.get_wallet(wallet_clean)
         latest = self.portfolio_repository.get_latest_snapshot(wallet_clean)
         status = (row or {}).get("status")
 
-        if latest:
+        if latest and status != "syncing":
             status = "synced"
         elif status in ("queued", "syncing"):
             status = status
@@ -55,6 +56,7 @@ class WalletService:
             "canUseFullFeatures": status == "synced",
             "hasSnapshot": bool(latest),
             "lastSyncedAt": latest.get("timestamp") if latest else None,
+            "syncError": (row or {}).get("sync_error"),
             "message": self._status_message(status),
         }
 
@@ -68,5 +70,6 @@ class WalletService:
             "queued": "Wallet is queued for initial crawl. This can take a few minutes.",
             "syncing": "Wallet crawl is running.",
             "synced": "Wallet is tracked and full portfolio features are available.",
+            "failed": "Wallet crawl failed. You can retry Update Plus or run the sync worker again.",
             "disabled": "Wallet tracking is disabled.",
         }.get(status, "Wallet status is unknown.")

@@ -382,7 +382,9 @@ class SimulationService:
         after["tokenHoldUsd"] -= min(value0, wallet0) + min(value1, wallet1)
         after["positionUsd"] += position_value
         after["netWorthUsd"] = after["tokenHoldUsd"] + after["positionUsd"] - after["borrowUsd"] - gas
-        warnings = []
+        warnings = [
+            "LP simulation is assumption-based and does not calculate production LP/Farming PnL or fee/yield attribution."
+        ]
 
         if value0 > wallet0:
             warnings.append(f"Wallet snapshot has less {token0} than the simulated LP amount.")
@@ -404,6 +406,7 @@ class SimulationService:
             "warnings": warnings,
             "assumptions": [
                 "LP model uses a 50/50 constant-product pool approximation.",
+                "Dashboard LP/Farming PnL remains hidden until fee, yield, and liquidity-range attribution are reliable.",
                 f"APR uses current pool data: {apr:.2f}%.",
                 f"Impermanent loss estimate: {il_pct:.4f}%.",
                 fee_model["source_note"],

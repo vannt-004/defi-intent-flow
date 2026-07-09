@@ -38,6 +38,31 @@ class PortfolioRepository(BaseRepository):
 
         return [keys_to_snake(row) for row in reversed(rows)]
 
+    def get_daily_snapshots_chronological(self, wallet: str, limit: int = 90) -> list[dict]:
+        pipeline = [
+            {"$match": {"wallet": wallet}},
+            {
+                "$addFields": {
+                    "snapshotDay": {
+                        "$dateToString": {
+                            "format": "%Y-%m-%d",
+                            "date": {"$toDate": {"$multiply": ["$timestamp", 1000]}},
+                            "timezone": "UTC",
+                        }
+                    }
+                }
+            },
+            {"$sort": {"timestamp": DESCENDING}},
+            {"$group": {"_id": "$snapshotDay", "snapshot": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$snapshot"}},
+            {"$sort": {"timestamp": DESCENDING}},
+            {"$limit": limit},
+            {"$sort": {"timestamp": 1}},
+            {"$project": {"_id": 0, "snapshotDay": 0}},
+        ]
+
+        return [keys_to_snake(row) for row in self.collection.aggregate(pipeline)]
+
     def get_snapshot_at_or_before(self, wallet: str, timestamp: int) -> dict | None:
         row = self.collection.find_one(
             {"wallet": wallet, "timestamp": {"$lte": timestamp}},

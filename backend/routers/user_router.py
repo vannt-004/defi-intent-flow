@@ -22,6 +22,12 @@ async def get_wallet_status(wallet: str):
     return await wallet_service.get_wallet_status(wallet)
 
 
+@router.get("/preview/{wallet}")
+async def get_preview_portfolio(wallet: str):
+    portfolio_service = PortfolioService(wallet)
+    return await portfolio_service.get_data()
+
+
 @router.get("/{wallet}")
 async def get_overview_portfolio(wallet: str):
     portfolio_service = PortfolioService(wallet)

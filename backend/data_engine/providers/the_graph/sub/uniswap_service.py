@@ -10,6 +10,7 @@ from shared.utils.case_utils import keys_to_camel
 
 class UniswapGraph(TheGraph):
     MIN_POOL_TVL = 10_000  # USD
+    MIN_POSITION_VALUE_USD = 0.01
 
     def __init__(self, pricing: PricingService = None):
         super().__init__()
@@ -192,6 +193,12 @@ class UniswapGraph(TheGraph):
             token0 = p["pool"]["token0"]["symbol"].upper()
             token1 = p["pool"]["token1"]["symbol"].upper()
             if not self._is_supported_pair(token0, token1):
+                self.logger.info(
+                    "Uniswap position skipped unsupported pair position=%s pair=%s/%s",
+                    p.get("id"),
+                    token0,
+                    token1,
+                )
                 continue
 
             dec0 = int(p["pool"]["token0"]["decimals"])
@@ -211,6 +218,19 @@ class UniswapGraph(TheGraph):
             price1 = float(price1)
 
             value_usd = amount0 * price0 + amount1 * price1
+            if value_usd < self.MIN_POSITION_VALUE_USD:
+                self.logger.warning(
+                    "Uniswap position skipped dust value position=%s pair=%s/%s value_usd=%s amount0=%s amount1=%s price0=%s price1=%s",
+                    p.get("id"),
+                    token0,
+                    token1,
+                    value_usd,
+                    amount0,
+                    amount1,
+                    price0,
+                    price1,
+                )
+                continue
 
             collected_fee0 = float(p.get("collectedFeesToken0") or 0)
             collected_fee1 = float(p.get("collectedFeesToken1") or 0)
@@ -233,7 +253,10 @@ class UniswapGraph(TheGraph):
                 "amount0": round(amount0, 8),
                 "amount1": round(amount1, 8),
                 "value_usd": round(value_usd, 4),
+                "liquidity": p.get("liquidity", "0"),
                 "fee_tier": int(p["pool"].get("feeTier") or 0),
+                "token0_decimals": dec0,
+                "token1_decimals": dec1,
                 "tick_lower": int(p["tickLower"]["tickIdx"]),
                 "tick_upper": int(p["tickUpper"]["tickIdx"]),
                 "token0_price": float(p["pool"].get("token0Price") or 0),

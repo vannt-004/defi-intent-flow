@@ -1,7 +1,7 @@
 from pymongo import DESCENDING, UpdateOne
 
 from shared.databases.base_repository import BaseRepository
-from shared.utils.case_utils import keys_to_camel, keys_to_snake
+from shared.utils.case_utils import keys_to_camel, keys_to_snake, sanitize_mongo_numbers
 
 
 class PositionSnapshotRepository(BaseRepository):
@@ -17,7 +17,9 @@ class PositionSnapshotRepository(BaseRepository):
         if not items:
             return None
 
-        return self.collection.insert_many([keys_to_camel(item) for item in items])
+        return self.collection.insert_many([
+            sanitize_mongo_numbers(keys_to_camel(item)) for item in items
+        ])
 
     def bulk_upsert(self, items: list[dict]):
         if not items:
@@ -32,7 +34,7 @@ class PositionSnapshotRepository(BaseRepository):
                         "positionId": item["position_id"],
                         "timestamp": item["timestamp"],
                     },
-                    {"$set": keys_to_camel(item)},
+                    {"$set": sanitize_mongo_numbers(keys_to_camel(item))},
                     upsert=True,
                 )
             )

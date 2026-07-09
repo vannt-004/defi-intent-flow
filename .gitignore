@@ -3,3 +3,6 @@
 **/.DS_Store
 **/.DS_Store?
 **/Thumbs.db
+**/tests
+**/test.py
+**/DATN

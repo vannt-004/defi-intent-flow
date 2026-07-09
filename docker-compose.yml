@@ -1,0 +1,96 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      CONNECTION_URL: mongodb://mongo:27017
+      DATABASE: defi-data
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  portfolio_worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      CONNECTION_URL: mongodb://mongo:27017
+      DATABASE: defi-data
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "run.py", "portfolio_stream_worker"]
+    depends_on:
+      - mongo
+      - redis
+
+  gas_fee_worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      CONNECTION_URL: mongodb://mongo:27017
+      DATABASE: defi-data
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "run.py", "gas_fee_worker"]
+    depends_on:
+      - mongo
+      - redis
+
+  market_workers:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    profiles:
+      - workers
+    env_file:
+      - ./backend/.env
+    environment:
+      CONNECTION_URL: mongodb://mongo:27017
+      DATABASE: defi-data
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "run.py", "run_workers"]
+    depends_on:
+      - mongo
+      - redis
+
+volumes:
+  mongo_data:
+  redis_data:

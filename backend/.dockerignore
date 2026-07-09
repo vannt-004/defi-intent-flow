@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.idea
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+venv
+env
+.venv
+Dockerfile

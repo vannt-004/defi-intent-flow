@@ -3,6 +3,7 @@
 !.env.example
 secrets.toml
 test.py
+.editorconfig
 
 venv/
 .venv/

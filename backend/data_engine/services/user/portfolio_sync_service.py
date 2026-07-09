@@ -1,16 +1,20 @@
 from datetime import datetime, timezone, timedelta
+import re
 from typing import Any
 
-from config import Web3Config
+from config import PortfolioSyncConfig, Web3Config
 from data_engine.providers.the_graph.lending_factory import LendingProviderFactory
 from data_engine.services.prices.pricing_service import PricingService
+from data_engine.services.user.gas_fee_queue_service import GasFeeQueueService
 from data_engine.services.user.onchain_transaction_crawler import OnchainTransactionCrawler
 from data_engine.services.user.wallet_service import WalletService
+from portfolio_engine.services.portfolio_analytics_service import PortfolioAnalyticsService
 from portfolio_engine.services.position_risk_service import PositionRiskService
 from portfolio_engine.services.position_service import PositionService
 from shared.databases.mongo_client import MongoConnection
 from shared.repositories.asset_snapshot_repository import AssetSnapshotRepository
 from shared.repositories.cashflow_repository import CashflowRepository
+from shared.repositories.portfolio_dashboard_view_repository import PortfolioDashboardViewRepository
 from shared.repositories.portfolio_repository import PortfolioRepository
 from shared.repositories.position_snapshot_repository import PositionSnapshotRepository
 from shared.repositories.wallet_repository import WalletRepository
@@ -19,6 +23,10 @@ from shared.utils.logger_utils import get_logger
 
 
 class PortfolioSyncService:
+    INITIAL_CASHFLOW_LOOKBACK_DAYS = PortfolioSyncConfig.INITIAL_CASHFLOW_LOOKBACK_DAYS
+    FULL_HISTORY_START_BLOCK = PortfolioSyncConfig.FULL_HISTORY_START_BLOCK
+    FULL_HISTORY_SYNTHETIC_BACKFILL_DAYS = PortfolioSyncConfig.FULL_HISTORY_SYNTHETIC_BACKFILL_DAYS
+    CASHFLOW_PROVIDER_EVENT_LIMIT = PortfolioSyncConfig.CASHFLOW_PROVIDER_EVENT_LIMIT
 
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
@@ -29,6 +37,7 @@ class PortfolioSyncService:
         self.asset_snapshot_repository = AssetSnapshotRepository(self.db)
         self.position_snapshot_repository = PositionSnapshotRepository(self.db)
         self.cashflow_repository = CashflowRepository(self.db)
+        self.dashboard_view_repository = PortfolioDashboardViewRepository(self.db)
         self.portfolio_repository = PortfolioRepository(self.db)
         self.yield_snapshot_repository = YieldSnapshotRepository(self.db)
 
@@ -38,30 +47,62 @@ class PortfolioSyncService:
             pricing=self.pricing, )
         self.position_service = PositionService()
         self.lending_factory = LendingProviderFactory(self.pricing)
+        self.gas_fee_queue = GasFeeQueueService()
 
     async def sync_user(self, wallet: str, mode: str = "SYNC") -> dict:
         wallet = wallet.lower().strip()
-        self.wallet_repository.collection.update_one(
-            {"wallet": wallet},
-            {"$set": {"_id": wallet, "wallet": wallet, "status": "syncing", "isActive": False, "updatedAt": datetime.now(timezone.utc)}},
-            upsert=True,
-        )
+        had_snapshot = bool(self.portfolio_repository.get_latest_snapshot(wallet))
+        self.wallet_repository.mark_syncing(wallet)
+        try:
+            return await self._sync_user_impl(wallet=wallet, mode=mode)
+        except Exception as exc:
+            self.wallet_repository.mark_sync_failed(
+                wallet=wallet,
+                error=str(exc),
+                reactivate_existing=had_snapshot,
+            )
+            self.logger.exception("Portfolio sync failed wallet=%s mode=%s error=%s", wallet, mode, exc)
+            return {
+                "wallet": wallet,
+                "status": "failed",
+                "error": str(exc),
+                "net_worth_usd": 0.0,
+                "total_pnl_usd": 0.0,
+            }
+
+    async def _sync_user_impl(self, wallet: str, mode: str = "SYNC") -> dict:
+        wallet = wallet.lower().strip()
+        mode = (mode or "SYNC").upper().strip()
         now_dt = datetime.now(timezone.utc)
         timestamp = int(now_dt.timestamp())
 
         previous = self.portfolio_repository.get_latest_snapshot(wallet)
 
-        if mode == "CRAWL_NEW_USER":
-            one_year_ago_dt = now_dt - timedelta(days=365)
-            last_sync_ts = int(one_year_ago_dt.timestamp())
+        is_initial_crawl = mode == "CRAWL_NEW_USER"
+        is_full_history_crawl = mode in ("CRAWL_FULL_HISTORY", "FULL_HISTORY")
+        if is_initial_crawl:
+            initial_from_dt = now_dt - timedelta(days=self.INITIAL_CASHFLOW_LOOKBACK_DAYS)
+            last_sync_ts = int(initial_from_dt.timestamp())
+            onchain_start_block = None
             self.logger.info(
                 f"[Sync] Detect INITIAL MODE for wallet: {wallet}. "
-                f"Setting historical sync timestamp to 1 year ago: {one_year_ago_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+                f"Setting cashflow sync timestamp to last {self.INITIAL_CASHFLOW_LOOKBACK_DAYS} days: "
+                f"{initial_from_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+            )
+        elif is_full_history_crawl:
+            last_sync_ts = None
+            onchain_start_block = self.FULL_HISTORY_START_BLOCK
+            self.logger.info(
+                "[Sync] Detect FULL HISTORY MODE for wallet=%s. "
+                "Protocol cashflow from genesis, on-chain start_block=%s",
+                wallet,
+                onchain_start_block,
             )
         else:
             last_sync_ts = int(previous.get("timestamp")) if previous and previous.get(
                 "timestamp"
             ) else int((now_dt - timedelta(days=365)).timestamp())
+            onchain_start_block = None
 
         assets = self.wallet_service.get_wallet_portfolio(wallet)
 
@@ -74,34 +115,55 @@ class PortfolioSyncService:
                 prov_positions = await provider.get_positions(wallet)
                 positions.extend(prov_positions)
 
-                new_deposits = await provider.get_deposits(wallet, from_ts=last_sync_ts, limit=1000)
-                new_withdraws = await provider.get_withdraws(wallet, from_ts=last_sync_ts, limit=1000)
-                new_borrows = await provider.get_borrows(wallet, from_ts=last_sync_ts, limit=1000)
-                new_repays = await provider.get_repays(wallet, from_ts=last_sync_ts, limit=1000)
+                new_deposits = await provider.get_deposits(wallet, from_ts=last_sync_ts, limit=self.CASHFLOW_PROVIDER_EVENT_LIMIT)
+                new_withdraws = await provider.get_withdraws(wallet, from_ts=last_sync_ts, limit=self.CASHFLOW_PROVIDER_EVENT_LIMIT)
+                new_borrows = await provider.get_borrows(wallet, from_ts=last_sync_ts, limit=self.CASHFLOW_PROVIDER_EVENT_LIMIT)
+                new_repays = await provider.get_repays(wallet, from_ts=last_sync_ts, limit=self.CASHFLOW_PROVIDER_EVENT_LIMIT)
 
                 new_actions.extend(new_deposits + new_withdraws + new_borrows + new_repays)
             except Exception as e:
                 self.logger.error(f"Error fetching data from provider {provider_name}: {e}" )
 
+        try:
+            uniswap_positions = await self.position_service.uniswap.get_positions(wallet)
+            positions.extend(uniswap_positions)
+            self.logger.info(
+                "Uniswap positions fetched wallet=%s count=%s",
+                wallet,
+                len(uniswap_positions),
+            )
+        except Exception as e:
+            self.logger.error(f"Error fetching data from provider UniswapGraph: {e}")
+
         if new_actions:
             self._save_cashflows(wallet, new_actions)
 
-        start_block = 0 if mode == "CRAWL_NEW_USER" else None
         onchain_saved = await self._sync_onchain_cashflows(
             wallet=wallet,
-            start_block=start_block,
+            start_block=onchain_start_block,
+            from_ts=last_sync_ts if is_initial_crawl else None,
         )
 
         historical_cashflows = self.cashflow_repository.get_all_wallet_cashflows(wallet)
         all_cashflow_stats = self._calculate_historical_cashflow(historical_cashflows)
 
-        if mode == "CRAWL_NEW_USER" and not previous:
-            self._backfill_synthetic_snapshots_7d(
+        if is_initial_crawl and not previous:
+            self._backfill_synthetic_snapshots(
                 wallet=wallet,
                 current_timestamp=timestamp,
                 assets=assets,
                 positions=positions,
                 cashflows=historical_cashflows,
+                days=7,
+            )
+        elif is_full_history_crawl and self.FULL_HISTORY_SYNTHETIC_BACKFILL_DAYS > 0:
+            self._backfill_synthetic_snapshots(
+                wallet=wallet,
+                current_timestamp=timestamp,
+                assets=assets,
+                positions=positions,
+                cashflows=historical_cashflows,
+                days=self.FULL_HISTORY_SYNTHETIC_BACKFILL_DAYS,
             )
 
         asset_rows, token_hold_usd, token_hold_pnl_usd = self._build_asset_snapshots(
@@ -139,7 +201,13 @@ class PortfolioSyncService:
         previous_net_worth = float(
             previous.get("net_worth_usd") or 0.0
         ) if previous else 0.0
-        total_pnl_usd = net_worth_usd - previous_net_worth if previous else 0.0
+        external_flow = self._calculate_external_flow(
+            historical_cashflows,
+            from_ts=int(previous.get("timestamp") or 0) if previous else None,
+            to_ts=timestamp,
+        )
+        net_external_flow_usd = external_flow["net_external_flow_usd"]
+        total_pnl_usd = (net_worth_usd - previous_net_worth - net_external_flow_usd) if previous else 0.0
 
         snapshot = {
             "wallet": wallet,
@@ -149,6 +217,10 @@ class PortfolioSyncService:
             "net_worth_usd": round(net_worth_usd, 4),
             "previous_net_worth_usd": round(previous_net_worth, 4),
             "total_pnl_usd": round(total_pnl_usd, 4),
+            "external_deposit_usd": round(external_flow["external_deposit_usd"], 4),
+            "external_withdraw_usd": round(external_flow["external_withdraw_usd"], 4),
+            "net_external_flow_usd": round(net_external_flow_usd, 4),
+            "pnl_method": "net_worth_delta_minus_external_flow",
             "token_hold_usd": round(token_hold_usd, 4),
             "token_hold_pnl_usd": round(token_hold_pnl_usd, 4),
             "total_supply_usd": round(total_supply_usd, 4),
@@ -173,6 +245,11 @@ class PortfolioSyncService:
         except Exception as exc:
             self.logger.warning(f"Risk snapshot skipped wallet={wallet}: {exc}")
 
+        try:
+            PortfolioAnalyticsService().refresh_dashboard_view(wallet)
+        except Exception as exc:
+            self.logger.warning(f"Dashboard read model refresh skipped wallet={wallet}: {exc}")
+
         self.wallet_repository.add_wallet(wallet)
 
         self.logger.info(
@@ -191,8 +268,8 @@ class PortfolioSyncService:
             "asset_snapshot": self.db["asset_snapshot"],
             "position_snapshot": self.db["position_snapshot"],
             "cashflow": self.db["cashflow"],
-            "onchain_transactions": self.db["onchain_transactions"],
             "position_risk_snapshot": self.db["position_risk_snapshot"],
+            "portfolio_dashboard_view": self.db["portfolio_dashboard_view"],
         }
         deleted = {}
         for name, collection in collections.items():
@@ -298,8 +375,11 @@ class PortfolioSyncService:
                     "is_collateral": bool(self._get(position, "is_collateral", False)),
                     "max_ltv": self._get(position, "max_ltv", 0),
                     "liquidation_threshold": self._get(position, "liquidation_threshold", 0),
+                    "liquidity": self._get(position, "liquidity"),
                     "amount0": self._get(position, "amount0"),
                     "amount1": self._get(position, "amount1"),
+                    "token0_decimals": self._get(position, "token0_decimals"),
+                    "token1_decimals": self._get(position, "token1_decimals"),
                     "deposited_token0": self._get(position, "deposited_token0"),
                     "deposited_token1": self._get(position, "deposited_token1"),
                     "withdrawn_token0": self._get(position, "withdrawn_token0"),
@@ -326,16 +406,18 @@ class PortfolioSyncService:
                 collateral_usd,
                 position_pnl_usd)
 
-    def _backfill_synthetic_snapshots_7d(
+    def _backfill_synthetic_snapshots(
         self,
         wallet: str,
         current_timestamp: int,
         assets: list[dict],
         positions: list[Any],
         cashflows: list[dict],
+        days: int,
     ):
+        days = max(int(days or 0), 0)
         day_start = current_timestamp // 86400 * 86400
-        for offset in range(7, 0, -1):
+        for offset in range(days, 0, -1):
             snapshot_ts = day_start - offset * 86400
             cashflows_until_snapshot = [
                 row for row in cashflows
@@ -449,8 +531,11 @@ class PortfolioSyncService:
                 "is_collateral": bool(self._get(position, "is_collateral", False)),
                 "max_ltv": yield_snapshot.get("max_ltv", self._get(position, "max_ltv", 0)),
                 "liquidation_threshold": yield_snapshot.get("liquidation_threshold", self._get(position, "liquidation_threshold", 0)),
+                "liquidity": self._get(position, "liquidity"),
                 "amount0": self._get(position, "amount0"),
                 "amount1": self._get(position, "amount1"),
+                "token0_decimals": self._get(position, "token0_decimals"),
+                "token1_decimals": self._get(position, "token1_decimals"),
                 "deposited_token0": self._get(position, "deposited_token0"),
                 "deposited_token1": self._get(position, "deposited_token1"),
                 "withdrawn_token0": self._get(position, "withdrawn_token0"),
@@ -485,6 +570,10 @@ class PortfolioSyncService:
             "net_worth_usd": round(net_worth_usd, 4),
             "previous_net_worth_usd": 0.0,
             "total_pnl_usd": 0.0,
+            "external_deposit_usd": 0.0,
+            "external_withdraw_usd": 0.0,
+            "net_external_flow_usd": 0.0,
+            "pnl_method": "net_worth_delta_minus_external_flow",
             "token_hold_usd": round(token_hold_usd, 4),
             "token_hold_pnl_usd": 0.0,
             "total_supply_usd": round(total_supply_usd, 4),
@@ -572,15 +661,21 @@ class PortfolioSyncService:
 
     def _save_cashflows(self, wallet: str, actions: list[dict]):
         rows = []
+        tx_hashes = []
         for action in actions:
-            price_at_tx = self.pricing.get_historical_price(
+            tx_hash = action.get("tx_hash") or self._extract_tx_hash(action.get("tx_id"))
+            if tx_hash:
+                tx_hashes.append(tx_hash)
+            price_quote = self.pricing.get_historical_price_quote(
                 action.get("symbol"),
                 int(action.get("timestamp") or 0),
             )
+            price_at_tx = float(price_quote.get("price") or 0)
             rows.append(
                 {
                     "wallet": wallet,
                     "tx_id": action["tx_id"],
+                    "tx_hash": tx_hash,
                     "timestamp": action["timestamp"],
                     "action": action["action"],
                     "action_label": self._action_label(action["action"]),
@@ -590,16 +685,35 @@ class PortfolioSyncService:
                     "market_id": action["market_id"],
                     "symbol": action["symbol"],
                     "amount": action["amount"],
+                    "amount_raw": action.get("amount_raw"),
+                    "decimals": action.get("decimals"),
                     "amount_usd": action["amount_usd"],
                     "recorded_amount_usd": action["amount_usd"],
                     "price_at_tx": price_at_tx,
                     "priceAtTx": price_at_tx,
-                    "price_source": "historical_snapshot" if price_at_tx else "provider_recorded",
+                    "price_source": price_quote.get("priceSource") or ("historical_snapshot" if price_at_tx else "provider_recorded"),
+                    "price_timestamp": price_quote.get("priceTimestamp"),
+                    "price_delta_seconds": price_quote.get("priceDeltaSeconds"),
+                    "price_max_delta_seconds": price_quote.get("priceMaxDeltaSeconds"),
+                    "price_reliable": bool(price_quote.get("priceReliable")),
+                    "price_note": price_quote.get("priceNote"),
                 }
             )
         self.cashflow_repository.bulk_upsert(rows)
+        self.gas_fee_queue.enqueue_hashes(wallet, tx_hashes)
 
-    async def _sync_onchain_cashflows(self, wallet: str, start_block: int | None) -> int:
+    def _extract_tx_hash(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        match = re.search(r"0x[a-fA-F0-9]{64}", str(value))
+        return match.group(0).lower() if match else None
+
+    async def _sync_onchain_cashflows(
+        self,
+        wallet: str,
+        start_block: int | None,
+        from_ts: int | None = None,
+    ) -> int:
         try:
             crawler = OnchainTransactionCrawler()
         except ValueError as exc:
@@ -607,17 +721,22 @@ class PortfolioSyncService:
             return 0
 
         try:
-            if start_block is None:
+            if start_block is None and not from_ts:
                 latest_block = self.cashflow_repository.get_latest_onchain_block(wallet)
                 start_block = latest_block + 1 if latest_block else 0
 
             rows, stats = await crawler.fetch_wallet_transactions(
                 wallet=wallet,
                 start_block=start_block,
+                from_ts=from_ts,
             )
             cashflows = [self._onchain_row_to_cashflow(row) for row in rows]
             cashflows = [row for row in cashflows if row]
             self.cashflow_repository.bulk_upsert(cashflows)
+            self.cashflow_repository.backfill_gas_by_tx_hash(
+                wallet,
+                self._gas_by_hash_from_cashflows(cashflows),
+            )
             self.logger.info(
                 "On-chain tx synced wallet=%s normal=%s erc20=%s saved=%s",
                 wallet,
@@ -632,11 +751,28 @@ class PortfolioSyncService:
         finally:
             await crawler.close()
 
+    def _gas_by_hash_from_cashflows(self, cashflows: list[dict]) -> dict[str, dict]:
+        gas_by_hash = {}
+        for row in cashflows:
+            tx_hash = row.get("tx_hash")
+            gas_usd = float(row.get("gas_cost_usd") or 0)
+            gas_eth = float(row.get("gas_cost_eth") or 0)
+            if not tx_hash or gas_usd <= 0:
+                continue
+            current = gas_by_hash.get(tx_hash.lower())
+            if not current or gas_usd > float(current.get("gasCostUsd") or 0):
+                gas_by_hash[tx_hash.lower()] = {
+                    "gasCostUsd": gas_usd,
+                    "gasCostEth": gas_eth,
+                }
+        return gas_by_hash
+
     def _onchain_row_to_cashflow(self, row: dict) -> dict | None:
         symbol = row.get("symbol")
         timestamp = int(row.get("timestamp") or 0)
         amount = float(row.get("amount") or 0)
-        price_at_tx = self.pricing.get_historical_price(symbol, timestamp)
+        price_quote = self.pricing.get_historical_price_quote(symbol, timestamp)
+        price_at_tx = float(price_quote.get("price") or 0)
         amount_usd = amount * price_at_tx if price_at_tx else 0.0
         gas_cost_eth = float(row.get("gas_cost_eth") or 0.0)
         eth_price_at_tx = self.pricing.get_historical_price("ETH", timestamp)
@@ -668,7 +804,12 @@ class PortfolioSyncService:
             "recorded_amount_usd": 0.0,
             "price_at_tx": price_at_tx,
             "priceAtTx": price_at_tx,
-            "price_source": "historical_snapshot" if price_at_tx else "missing_snapshot",
+            "price_source": price_quote.get("priceSource") or ("historical_snapshot" if price_at_tx else "missing_snapshot"),
+            "price_timestamp": price_quote.get("priceTimestamp"),
+            "price_delta_seconds": price_quote.get("priceDeltaSeconds"),
+            "price_max_delta_seconds": price_quote.get("priceMaxDeltaSeconds"),
+            "price_reliable": bool(price_quote.get("priceReliable")),
+            "price_note": price_quote.get("priceNote"),
             "from": row.get("from"),
             "to": row.get("to"),
             "gas_cost_eth": gas_cost_eth,
@@ -703,6 +844,60 @@ class PortfolioSyncService:
             "borrow_usd": round(borrow_usd, 4),
             "repay_usd": round(repay_usd, 4),
         }
+
+    def _calculate_external_flow(
+        self,
+        historical_actions: list[dict],
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+    ) -> dict:
+        protocol_hashes = {
+            self._extract_tx_hash(row.get("tx_hash") or row.get("tx_id"))
+            for row in historical_actions
+            if (row.get("event_source") or "").lower() == "protocol"
+        }
+        protocol_hashes.discard(None)
+
+        external_deposit_usd = 0.0
+        external_withdraw_usd = 0.0
+
+        for row in historical_actions:
+            timestamp = int(row.get("timestamp") or 0)
+            if from_ts is not None and timestamp <= from_ts:
+                continue
+            if to_ts is not None and timestamp > to_ts:
+                continue
+            if not self._is_external_capital_flow(row, protocol_hashes):
+                continue
+
+            amount_usd = float(row.get("amount_usd") or row.get("recorded_amount_usd") or 0)
+            if row.get("action") == "transfer_in":
+                external_deposit_usd += amount_usd
+            elif row.get("action") == "transfer_out":
+                external_withdraw_usd += amount_usd
+
+        return {
+            "external_deposit_usd": round(external_deposit_usd, 4),
+            "external_withdraw_usd": round(external_withdraw_usd, 4),
+            "net_external_flow_usd": round(external_deposit_usd - external_withdraw_usd, 4),
+        }
+
+    def _is_external_capital_flow(self, row: dict, protocol_hashes: set[str]) -> bool:
+        action = row.get("action")
+        if action not in ("transfer_in", "transfer_out"):
+            return False
+        event_source = (row.get("event_source") or row.get("source") or "").lower()
+        category = (row.get("transaction_category") or "").lower()
+        if event_source != "onchain" and row.get("source") != "etherscan":
+            return False
+        if category and category != "transfer":
+            return False
+        tx_hash = self._extract_tx_hash(row.get("tx_hash") or row.get("tx_id"))
+        if tx_hash and tx_hash in protocol_hashes:
+            return False
+        if row.get("exclude_from_token_basis") or row.get("token_basis_note"):
+            return False
+        return True
 
     def _action_label(self, action: str) -> str:
         return {

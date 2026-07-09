@@ -595,10 +595,12 @@ class CurveService(TheGraph):
         # inputTokenAmounts / outputTokenAmounts là list tương ứng với inputTokens
         amounts_raw = item.get("inputTokenAmounts") or item.get("outputTokenAmounts") or []
         amounts = []
+        decimals = []
         for i, t in enumerate(tokens):
             dec = int(t.get("decimals") or 18)
+            decimals.append(dec)
             raw = float(amounts_raw[i]) if i < len(amounts_raw) else 0.0
-            amounts.append(round(raw / (10 ** dec) if raw > 1e10 else raw, 8))
+            amounts.append(round(raw / (10 ** dec), 8))
 
         return {
             "tx_id": item["id"],
@@ -610,5 +612,7 @@ class CurveService(TheGraph):
             "to": item.get("to"),
             "token": symbols,
             "amounts": amounts,
+            "amounts_raw": [str(value) for value in amounts_raw],
+            "decimals": decimals,
             "amount_usd": round(float(item.get("amountUSD") or 0), 4),
         }
