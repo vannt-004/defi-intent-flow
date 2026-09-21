@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.local
+.idea
+.next
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tsconfig.tsbuildinfo
+Dockerfile

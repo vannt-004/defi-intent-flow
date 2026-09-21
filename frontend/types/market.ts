@@ -1,0 +1,20 @@
+export type TPool = {
+   address: string,
+   asset: string,
+   borrowApr: number,
+   borrowStableApr: number,
+   canBorrow: boolean,
+   decimals: number,
+   isActive: boolean,
+   liquidationPenalty: number,
+   liquidationThreshold: number,
+   maxLtv: number,
+   name: string,
+   protocol: string,
+   supplyApr: number,
+   tokenAddress: string,
+   totalBorrowUsd: number,
+   totalDepositUsd: number,
+   tvl: number,
+   type: string
+}
